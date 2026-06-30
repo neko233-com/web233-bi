@@ -28,6 +28,34 @@ export interface SegmentValue {
   value: number;
 }
 
+export type BreakdownCategory =
+  | "revenue"
+  | "geography"
+  | "expense"
+  | "cashflow"
+  | "profitBridge";
+
+export type ConfidenceLevel = "audited" | "derived" | "estimated";
+
+export interface FinancialBreakdown {
+  category: BreakdownCategory;
+  label: string;
+  value: number;
+  unit?: string;
+  percentOfRevenue?: number;
+  sourceLabel: string;
+  sourceUrl: string;
+  confidence: ConfidenceLevel;
+  note: string;
+}
+
+export interface SourceCitation {
+  label: string;
+  url: string;
+  scope: string;
+  confidence: ConfidenceLevel;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -44,6 +72,9 @@ export interface Company {
   reports: ReportLink[];
   metrics: FinancialMetric[];
   segments: SegmentValue[];
+  geography: SegmentValue[];
+  breakdowns: FinancialBreakdown[];
+  citations: SourceCitation[];
   watchItems: string[];
 }
 

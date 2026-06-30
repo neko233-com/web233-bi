@@ -1,7 +1,14 @@
 import "./styles.css";
 import { companies, countries } from "./data/reports";
 import { readPdfFile } from "./pdf";
-import type { Company, CountryCode, FinancialMetric, PdfAnalysis } from "./types";
+import type {
+  BreakdownCategory,
+  Company,
+  CountryCode,
+  FinancialBreakdown,
+  FinancialMetric,
+  PdfAnalysis,
+} from "./types";
 
 type CountryFilter = CountryCode | "all";
 type MetricKey = keyof Pick<
@@ -48,6 +55,20 @@ const metricUnits: Record<MetricKey, string> = {
   freeCashFlow: "",
   grossMargin: "%",
   rdExpense: "",
+};
+
+const breakdownTitles: Record<BreakdownCategory, string> = {
+  revenue: "收入来源",
+  geography: "地区贡献",
+  expense: "费用结构",
+  cashflow: "自由现金流桥",
+  profitBridge: "利润桥",
+};
+
+const confidenceLabels: Record<FinancialBreakdown["confidence"], string> = {
+  audited: "披露",
+  derived: "推导",
+  estimated: "估算",
 };
 
 const escapeHtml = (value: string) =>
@@ -147,6 +168,9 @@ const renderMetricCard = (
   </article>
 `;
 
+const getBreakdowns = (company: Company, category: BreakdownCategory) =>
+  company.breakdowns.filter((item) => item.category === category);
+
 const trendChart = (
   company: Company,
   primaryKey: MetricKey,
@@ -240,6 +264,162 @@ const segmentChart = (company: Company) => {
     </div>
   `;
 };
+
+const breakdownList = (company: Company, category: BreakdownCategory, limit?: number) => {
+  const latest = latestMetric(company);
+  const rows = getBreakdowns(company, category).slice(0, limit);
+  const max = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
+
+  return `
+    <div class="breakdown-list breakdown-list--${category}">
+      ${rows
+        .map((row) => {
+          const width = Math.max((Math.abs(row.value) / max) * 100, 4);
+          const valueClass = row.value < 0 ? "is-negative" : "";
+          return `
+            <article class="breakdown-row">
+              <div class="breakdown-main">
+                <div>
+                  <strong>${escapeHtml(row.label)}</strong>
+                  <small>${escapeHtml(row.sourceLabel)} · ${confidenceLabels[row.confidence]}</small>
+                </div>
+                <span class="${valueClass}">
+                  ${formatValue(row.value)} ${row.unit ?? company.unit}
+                </span>
+              </div>
+              <div class="breakdown-bar" aria-hidden="true">
+                <i class="${valueClass}" style="width: ${width}%"></i>
+              </div>
+              <p>${escapeHtml(row.note)} ${row.percentOfRevenue === undefined ? "" : `占收入 ${formatValue(row.percentOfRevenue, "%")}。`}</p>
+            </article>
+          `;
+        })
+        .join("")}
+      <div class="reconcile-note">
+        <span>${latest.fiscalYear}</span>
+        <strong>${breakdownTitles[category]}</strong>
+      </div>
+    </div>
+  `;
+};
+
+const profitBridge = (company: Company) => {
+  const rows = getBreakdowns(company, "profitBridge");
+
+  return `
+    <div class="bridge-track">
+      ${rows
+        .map(
+          (row) => `
+            <article>
+              <span>${escapeHtml(row.label)}</span>
+              <strong>${formatValue(row.value)} ${company.unit}</strong>
+              <small>${formatValue(row.percentOfRevenue ?? 0, "%")} of revenue</small>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+};
+
+const citationRail = (company: Company) => `
+  <div class="citation-rail">
+    ${company.citations
+      .map(
+        (citation) => `
+          <a href="${citation.url}" target="_blank" rel="noreferrer">
+            <span>${confidenceLabels[citation.confidence]}</span>
+            <strong>${escapeHtml(citation.label)}</strong>
+            <small>${escapeHtml(citation.scope)}</small>
+          </a>
+        `,
+      )
+      .join("")}
+  </div>
+`;
+
+const deepDivePanel = (company: Company) => `
+  <section class="panel deep-panel" id="breakdown" aria-labelledby="breakdown-title">
+    <div class="section-heading section-heading--wide">
+      <div>
+        <h2 id="breakdown-title">业务与财务细节拆解</h2>
+        <p>把总收入、利润、费用和现金流拆回业务线、地区和报表行项目，所有数字都带来源与置信度。</p>
+      </div>
+      <div class="source-score">
+        <span>Source confidence</span>
+        <strong>${company.citations.filter((item) => item.confidence === "audited").length}/${company.citations.length}</strong>
+      </div>
+    </div>
+    <div class="deep-grid">
+      <section>
+        <h3>收入由哪些业务提供</h3>
+        ${breakdownList(company, "revenue")}
+      </section>
+      <section>
+        <h3>地区贡献</h3>
+        ${breakdownList(company, "geography")}
+      </section>
+      <section>
+        <h3>费用结构</h3>
+        ${breakdownList(company, "expense")}
+      </section>
+      <section>
+        <h3>现金流桥</h3>
+        ${breakdownList(company, "cashflow")}
+      </section>
+    </div>
+    <div class="profit-source-grid">
+      <section>
+        <h3>利润桥</h3>
+        ${profitBridge(company)}
+      </section>
+      <section>
+        <h3>引用与来源</h3>
+        ${citationRail(company)}
+      </section>
+    </div>
+  </section>
+`;
+
+const autoIngestPanel = (company: Company) => `
+  <section class="panel ingest-panel" id="ingest" aria-labelledby="ingest-title">
+    <div class="section-heading section-heading--wide">
+      <div>
+        <h2 id="ingest-title">自动收录任意公司</h2>
+        <p>下一阶段可接入 Workers + D1 + R2 + Queues：输入 ticker 后自动抓取年报、抽取业务分部、生成置信度和引用。</p>
+      </div>
+      <button class="ghost-button" type="button">规划任务</button>
+    </div>
+    <div class="ingest-flow">
+      <article>
+        <span>01</span>
+        <strong>识别公司</strong>
+        <small>Ticker / CIK / EDINET / HKEX code</small>
+      </article>
+      <article>
+        <span>02</span>
+        <strong>抓取财报</strong>
+        <small>SEC、交易所、IR、年报 PDF</small>
+      </article>
+      <article>
+        <span>03</span>
+        <strong>拆分业务来源</strong>
+        <small>分部收入、地区、费用、现金流桥</small>
+      </article>
+      <article>
+        <span>04</span>
+        <strong>标注可信度</strong>
+        <small>披露 / 推导 / 估算，保留原文引用</small>
+      </article>
+    </div>
+    <div class="ingest-preview">
+      <input value="${escapeHtml(company.ticker)}" aria-label="公司代码示例" />
+      <button type="button">模拟收录</button>
+      <span>当前为静态演示，后端任务接入后可变为真实队列。</span>
+    </div>
+  </section>
+`;
 
 const reportsTable = (company: Company) => `
   <section class="panel archive-panel" aria-labelledby="archive-title">
@@ -350,7 +530,7 @@ const sidebar = (selectedCompany: Company) => {
         <span class="brand-mark">BI</span>
         <div>
           <strong>neko233-BI</strong>
-          <small>财报阅读工作台</small>
+          <small>Financial intelligence</small>
         </div>
       </div>
       <div class="filter-group">
@@ -387,8 +567,8 @@ const sidebar = (selectedCompany: Company) => {
           .join("")}
       </div>
       <div class="filter-note">
-        <strong>收录策略</strong>
-        <p>先用静态数据覆盖科技、游戏、平台与半导体公司，后续可接入定时任务校验 PDF 可用性。</p>
+        <strong>研究模式</strong>
+        <p>按来源拆分收入、利润、费用与现金流，低置信度字段会显式标注，不把推导当事实。</p>
       </div>
     </aside>
   `;
@@ -406,8 +586,9 @@ const companyOverview = (company: Company) => {
       <header class="topbar">
         <nav>
           <a href="#analysis" class="is-active">财务分析</a>
+          <a href="#breakdown">业务拆解</a>
           <a href="#archive">PDF 归档</a>
-          <a href="#upload">上传解析</a>
+          <a href="#ingest">自动收录</a>
         </nav>
         <div class="actions">
           <button data-action="download-json">下载分析包</button>
@@ -447,8 +628,8 @@ const companyOverview = (company: Company) => {
         <section class="panel insight-panel">
           <div class="section-heading">
             <div>
-              <h2>业务结构</h2>
-              <p>按最近披露年度的主要分部整理。</p>
+              <h2>业务来源摘要</h2>
+              <p>按最近披露年度的主要分部整理，辅助定位增长来源。</p>
             </div>
           </div>
           ${segmentChart(company)}
@@ -458,6 +639,8 @@ const companyOverview = (company: Company) => {
           </div>
         </section>
       </section>
+      ${deepDivePanel(company)}
+      ${autoIngestPanel(company)}
       <div id="archive">${reportsTable(company)}</div>
     </main>
   `;

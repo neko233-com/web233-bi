@@ -1,4 +1,14 @@
-import type { Company, CountryCode, ReportLink } from "../types";
+import type {
+  Company,
+  CountryCode,
+  FinancialBreakdown,
+  ReportLink,
+  SegmentValue,
+  SourceCitation,
+} from "../types";
+
+type CompanySeed = Omit<Company, "geography" | "breakdowns" | "citations"> &
+  Partial<Pick<Company, "geography" | "breakdowns" | "citations">>;
 
 const YEARS = [2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016, 2015];
 
@@ -37,7 +47,200 @@ export const countries: Array<{ code: CountryCode | "all"; label: string }> = [
   { code: "japan", label: "日本" },
 ];
 
-export const companies: Company[] = [
+const latestMetric = (company: CompanySeed) =>
+  [...company.metrics].sort((a, b) => b.fiscalYear - a.fiscalYear)[0];
+
+const rounded = (value: number) => Number(value.toFixed(Math.abs(value) >= 100 ? 0 : 1));
+
+const defaultGeography = (country: CountryCode, revenue: number): SegmentValue[] => {
+  const sharesByCountry: Record<CountryCode, Array<{ name: string; share: number }>> = {
+    us: [
+      { name: "Americas", share: 0.43 },
+      { name: "EMEA", share: 0.25 },
+      { name: "Greater China", share: 0.17 },
+      { name: "Japan", share: 0.07 },
+      { name: "Rest of APAC", share: 0.08 },
+    ],
+    china: [
+      { name: "Mainland China", share: 0.54 },
+      { name: "Hong Kong / Macau", share: 0.08 },
+      { name: "International", share: 0.28 },
+      { name: "Other Asia", share: 0.1 },
+    ],
+    japan: [
+      { name: "Japan", share: 0.34 },
+      { name: "Americas", share: 0.32 },
+      { name: "Europe", share: 0.23 },
+      { name: "Other", share: 0.11 },
+    ],
+  };
+
+  return sharesByCountry[country].map((item) => ({
+    name: item.name,
+    value: rounded(revenue * item.share),
+  }));
+};
+
+const makeCitations = (company: CompanySeed): SourceCitation[] => [
+  {
+    label: "Annual report archive",
+    url: company.reports[0]?.sourceUrl ?? company.investorRelationsUrl,
+    scope: "年报 PDF / 来源页",
+    confidence: company.reports.some((report) => report.status === "verified") ? "audited" : "derived",
+  },
+  {
+    label: "Investor relations",
+    url: company.investorRelationsUrl,
+    scope: "业务分部、财报口径、披露说明",
+    confidence: "audited",
+  },
+];
+
+const makeBreakdowns = (company: CompanySeed, geography: SegmentValue[]): FinancialBreakdown[] => {
+  const latest = latestMetric(company);
+  const sourceUrl = company.reports[0]?.sourceUrl ?? company.investorRelationsUrl;
+  const grossProfit = rounded(latest.revenue * (latest.grossMargin / 100));
+  const operatingExpense = rounded(Math.max(grossProfit - latest.operatingIncome, 0));
+  const otherOpex = rounded(Math.max(operatingExpense - latest.rdExpense, 0));
+  const reinvestmentGap = rounded(latest.freeCashFlow - latest.netIncome);
+
+  const revenueSources: FinancialBreakdown[] = company.segments.map((segment) => ({
+    category: "revenue",
+    label: segment.name,
+    value: segment.value,
+    percentOfRevenue: rounded((segment.value / latest.revenue) * 100),
+    sourceLabel: "业务分部披露",
+    sourceUrl,
+    confidence: "audited",
+    note: "来自公司年报的主要收入分部，适合判断增长由哪些业务线贡献。",
+  }));
+
+  const geographySources: FinancialBreakdown[] = geography.map((segment) => ({
+    category: "geography",
+    label: segment.name,
+    value: segment.value,
+    percentOfRevenue: rounded((segment.value / latest.revenue) * 100),
+    sourceLabel: "地区口径映射",
+    sourceUrl,
+    confidence: "derived",
+    note: "用于产品演示的地区收入拆分，正式版本应回填年报地区披露。",
+  }));
+
+  const expenseSources: FinancialBreakdown[] = [
+    {
+      category: "expense",
+      label: "R&D",
+      value: latest.rdExpense,
+      percentOfRevenue: rounded((latest.rdExpense / latest.revenue) * 100),
+      sourceLabel: "研发费用行项目",
+      sourceUrl,
+      confidence: "audited",
+      note: "研发投入强度，用于观察 AI、云、游戏内容或芯片迭代的投入节奏。",
+    },
+    {
+      category: "expense",
+      label: "Sales / Admin / Other Opex",
+      value: otherOpex,
+      percentOfRevenue: rounded((otherOpex / latest.revenue) * 100),
+      sourceLabel: "毛利 - 经营利润 - 研发费用",
+      sourceUrl,
+      confidence: "derived",
+      note: "从披露行项目推导的其他经营费用，适合看运营杠杆变化。",
+    },
+  ];
+
+  const cashflowSources: FinancialBreakdown[] = [
+    {
+      category: "cashflow",
+      label: "Net income",
+      value: latest.netIncome,
+      percentOfRevenue: rounded((latest.netIncome / latest.revenue) * 100),
+      sourceLabel: "利润表",
+      sourceUrl,
+      confidence: "audited",
+      note: "净利润是自由现金流桥的起点。",
+    },
+    {
+      category: "cashflow",
+      label: "Working capital / Capex bridge",
+      value: reinvestmentGap,
+      percentOfRevenue: rounded((reinvestmentGap / latest.revenue) * 100),
+      sourceLabel: "FCF - Net income",
+      sourceUrl,
+      confidence: "derived",
+      note: "自由现金流与净利润的差额，提示资本开支、营运资本和非现金项目影响。",
+    },
+    {
+      category: "cashflow",
+      label: "Free cash flow",
+      value: latest.freeCashFlow,
+      percentOfRevenue: rounded((latest.freeCashFlow / latest.revenue) * 100),
+      sourceLabel: "现金流量表",
+      sourceUrl,
+      confidence: "audited",
+      note: "衡量可回购、分红、再投资的真实现金生成能力。",
+    },
+  ];
+
+  const profitBridge: FinancialBreakdown[] = [
+    {
+      category: "profitBridge",
+      label: "Revenue",
+      value: latest.revenue,
+      percentOfRevenue: 100,
+      sourceLabel: "收入行项目",
+      sourceUrl,
+      confidence: "audited",
+      note: "全部业务收入基准。",
+    },
+    {
+      category: "profitBridge",
+      label: "Gross profit",
+      value: grossProfit,
+      percentOfRevenue: latest.grossMargin,
+      sourceLabel: "收入 × 毛利率",
+      sourceUrl,
+      confidence: "derived",
+      note: "产品组合、云服务、软件订阅和硬件周期会影响这一层。",
+    },
+    {
+      category: "profitBridge",
+      label: "Operating income",
+      value: latest.operatingIncome,
+      percentOfRevenue: rounded((latest.operatingIncome / latest.revenue) * 100),
+      sourceLabel: "经营利润行项目",
+      sourceUrl,
+      confidence: "audited",
+      note: "扣除经营费用后的业务盈利能力。",
+    },
+    {
+      category: "profitBridge",
+      label: "Net income",
+      value: latest.netIncome,
+      percentOfRevenue: rounded((latest.netIncome / latest.revenue) * 100),
+      sourceLabel: "净利润行项目",
+      sourceUrl,
+      confidence: "audited",
+      note: "最终归属股东的盈利。",
+    },
+  ];
+
+  return [...revenueSources, ...geographySources, ...expenseSources, ...cashflowSources, ...profitBridge];
+};
+
+const completeCompany = (company: CompanySeed): Company => {
+  const latest = latestMetric(company);
+  const geography = company.geography ?? defaultGeography(company.country, latest.revenue);
+
+  return {
+    ...company,
+    geography,
+    citations: company.citations ?? makeCitations(company),
+    breakdowns: company.breakdowns ?? makeBreakdowns(company, geography),
+  };
+};
+
+const companySeeds: CompanySeed[] = [
   {
     id: "apple",
     name: "Apple",
@@ -244,3 +447,5 @@ export const companies: Company[] = [
     watchItems: ["主机换代窗口", "第一方软件 attach rate", "IP 授权收入"],
   },
 ];
+
+export const companies: Company[] = companySeeds.map(completeCompany);
