@@ -1,6 +1,12 @@
-export type CountryCode = "us" | "china" | "japan";
+export type CountryCode = "us" | "china_a" | "hongkong" | "japan";
 
-export type CompanyKind = "tech" | "game" | "platform" | "semiconductor";
+export type CompanyKind =
+  | "tech"
+  | "game"
+  | "platform"
+  | "semiconductor"
+  | "consumer"
+  | "retail";
 
 export type LinkStatus = "verified" | "seeded" | "source-page";
 
