@@ -46,6 +46,7 @@ export const countries: Array<{ code: CountryCode | "all"; label: string }> = [
   { code: "china_a", label: "中国A股" },
   { code: "hongkong", label: "港股" },
   { code: "japan", label: "日本" },
+  { code: "global", label: "全球" },
 ];
 
 const latestMetric = (company: CompanySeed) =>
@@ -78,6 +79,12 @@ const defaultGeography = (country: CountryCode, revenue: number): SegmentValue[]
       { name: "Americas", share: 0.32 },
       { name: "Europe", share: 0.23 },
       { name: "Other", share: 0.11 },
+    ],
+    global: [
+      { name: "Home market", share: 0.46 },
+      { name: "Americas", share: 0.24 },
+      { name: "Europe", share: 0.18 },
+      { name: "Asia Pacific", share: 0.12 },
     ],
   };
 

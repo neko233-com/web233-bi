@@ -2,6 +2,7 @@ import "./styles.css";
 import { companies, countries } from "./data/reports";
 import { listedCompanyUniverse } from "./data/universe";
 import { readPdfFile } from "./pdf";
+import type { ListedCompanyCandidate } from "./data/universe";
 import type {
   BreakdownCategory,
   Company,
@@ -21,6 +22,11 @@ interface AppState {
   country: CountryFilter;
   query: string;
   companyId: string;
+  dynamicCompanies: Company[];
+  remoteMatches: ListedCompanyCandidate[];
+  remoteBusy: boolean;
+  remoteError?: string;
+  loadingCompanyTicker?: string;
   pdfAnalysis?: PdfAnalysis;
   pdfPreviewUrl?: string;
   pdfError?: string;
@@ -42,6 +48,9 @@ const state: AppState = {
   country: "all",
   query: "",
   companyId: companies[1]?.id ?? companies[0].id,
+  dynamicCompanies: [],
+  remoteMatches: [],
+  remoteBusy: false,
   pdfBusy: false,
 };
 
@@ -82,6 +91,20 @@ const currencyToUsdRates: Record<string, number> = {
   CNY: 0.138,
   HKD: 0.128,
   JPY: 0.0063,
+  EUR: 1.08,
+  GBP: 1.27,
+  CAD: 0.73,
+  AUD: 0.66,
+  CHF: 1.11,
+  TWD: 0.031,
+  KRW: 0.00072,
+  INR: 0.012,
+  SGD: 0.74,
+  SEK: 0.095,
+  DKK: 0.145,
+  NOK: 0.094,
+  BRL: 0.18,
+  MXN: 0.055,
 };
 
 const escapeHtml = (value: string) =>
@@ -119,11 +142,13 @@ const latestMetric = (company: Company) =>
 const earliestMetric = (company: Company) =>
   [...company.metrics].sort((a, b) => a.fiscalYear - b.fiscalYear)[0];
 
+const getAllCompanies = () => [...companies, ...state.dynamicCompanies];
+
 const getSelectedCompany = () =>
-  companies.find((company) => company.id === state.companyId) ?? companies[0];
+  getAllCompanies().find((company) => company.id === state.companyId) ?? companies[0];
 
 const getFilteredCompanies = () =>
-  companies.filter((company) => {
+  getAllCompanies().filter((company) => {
     const matchesCountry = state.country === "all" || company.country === state.country;
     const query = state.query.trim().toLowerCase();
     const matchesQuery =
@@ -139,7 +164,7 @@ const getFilteredCompanies = () =>
 const getUniverseMatches = () => {
   const query = state.query.trim().toLowerCase();
   if (query.length === 0) return [];
-  const seededTickers = new Set(companies.map((company) => company.ticker.toLowerCase()));
+  const knownTickers = new Set(getAllCompanies().map((company) => company.ticker.toLowerCase()));
 
   return listedCompanyUniverse
     .filter((candidate) => {
@@ -148,9 +173,102 @@ const getUniverseMatches = () => {
         .join(" ")
         .toLowerCase()
         .includes(query);
-      return matchesMarket && matchesQuery && !seededTickers.has(candidate.ticker.toLowerCase());
+      return matchesMarket && matchesQuery && !knownTickers.has(candidate.ticker.toLowerCase());
     })
     .slice(0, 6);
+};
+
+let remoteSearchTimer: number | undefined;
+let remoteSearchRequestId = 0;
+
+const getRemoteMatches = () => {
+  const knownTickers = new Set(getAllCompanies().map((company) => company.ticker.toLowerCase()));
+  const localTickers = new Set(listedCompanyUniverse.map((company) => company.ticker.toLowerCase()));
+
+  return state.remoteMatches
+    .filter((candidate) => {
+      const ticker = candidate.ticker.toLowerCase();
+      const matchesMarket = state.country === "all" || candidate.market === state.country;
+      return matchesMarket && !knownTickers.has(ticker) && !localTickers.has(ticker);
+    })
+    .slice(0, 8);
+};
+
+const requestRemoteSearch = (query: string) => {
+  window.clearTimeout(remoteSearchTimer);
+
+  if (query.trim().length < 2) {
+    state.remoteMatches = [];
+    state.remoteBusy = false;
+    state.remoteError = undefined;
+    return;
+  }
+
+  remoteSearchTimer = window.setTimeout(async () => {
+    const requestId = ++remoteSearchRequestId;
+    state.remoteBusy = true;
+    state.remoteError = undefined;
+    render({ restoreQueryFocus: document.querySelector<HTMLInputElement>("#company-query")?.selectionStart ?? query.length });
+
+    try {
+      const params = new URLSearchParams({ q: query.trim() });
+      if (state.country !== "all") params.set("market", state.country);
+      const response = await fetch(`/api/search?${params.toString()}`);
+      if (!response.ok) throw new Error(`搜索接口返回 ${response.status}`);
+      const payload = (await response.json()) as { results?: ListedCompanyCandidate[] };
+      if (requestId !== remoteSearchRequestId) return;
+      state.remoteMatches = payload.results ?? [];
+    } catch (error) {
+      if (requestId !== remoteSearchRequestId) return;
+      state.remoteMatches = [];
+      state.remoteError = error instanceof Error ? error.message : "远程搜索失败。";
+    } finally {
+      if (requestId === remoteSearchRequestId) {
+        state.remoteBusy = false;
+        render({ restoreQueryFocus: document.querySelector<HTMLInputElement>("#company-query")?.selectionStart ?? query.length });
+      }
+    }
+  }, 350);
+};
+
+const loadRemoteCompany = async (ticker: string) => {
+  const normalizedTicker = ticker.trim();
+  if (!normalizedTicker) return;
+
+  const existing = getAllCompanies().find(
+    (company) => company.ticker.toLowerCase() === normalizedTicker.toLowerCase(),
+  );
+  if (existing) {
+    state.companyId = existing.id;
+    state.query = existing.name;
+    render();
+    return;
+  }
+
+  state.loadingCompanyTicker = normalizedTicker;
+  state.remoteError = undefined;
+  render();
+
+  try {
+    const params = new URLSearchParams({ symbol: normalizedTicker });
+    const response = await fetch(`/api/company?${params.toString()}`);
+    if (!response.ok) throw new Error(`公司数据接口返回 ${response.status}`);
+    const company = (await response.json()) as Company;
+
+    state.dynamicCompanies = [
+      ...state.dynamicCompanies.filter((item) => item.ticker.toLowerCase() !== company.ticker.toLowerCase()),
+      company,
+    ];
+    state.companyId = company.id;
+    state.query = company.name;
+    state.intakeQuery = company.ticker;
+    state.remoteMatches = [];
+  } catch (error) {
+    state.remoteError = error instanceof Error ? error.message : "公司数据加载失败。";
+  } finally {
+    state.loadingCompanyTicker = undefined;
+    render();
+  }
 };
 
 const calculateCagr = (start: number, end: number, years: number) => {
@@ -479,10 +597,10 @@ const autoIngestPanel = (company: Company) => {
     <section class="panel ingest-panel" id="ingest" aria-labelledby="ingest-title">
       <div class="section-heading section-heading--wide">
         <div>
-          <h2 id="ingest-title">自动收录任意公司</h2>
-          <p>输入任意上市公司名称或代码，先生成官方披露源路线；接入 Workers + D1 + R2 + Queues 后可变成真实抓取、解析、归档队列。</p>
+          <h2 id="ingest-title">联网查看任意公司</h2>
+          <p>输入上市公司名称或代码后，会先搜索公开市场结果，再拉取年度财务数据并生成可浏览的分析页。</p>
         </div>
-        <button class="ghost-button" type="button">规划任务</button>
+        <button class="ghost-button" type="button">数据路线</button>
       </div>
       <div class="ingest-flow">
         <article>
@@ -492,13 +610,13 @@ const autoIngestPanel = (company: Company) => {
         </article>
         <article>
           <span>02</span>
-          <strong>抓取财报</strong>
-          <small>SEC、CNINFO、HKEX、IR、年报 PDF</small>
+          <strong>拉取指标</strong>
+          <small>年度收入、利润、现金流、研发费用</small>
         </article>
         <article>
           <span>03</span>
           <strong>拆分业务来源</strong>
-          <small>分部收入、地区、费用、现金流桥</small>
+          <small>分部、地区、费用、现金流桥</small>
         </article>
         <article>
           <span>04</span>
@@ -522,11 +640,11 @@ const autoIngestPanel = (company: Company) => {
       </div>
       <div class="ingest-preview">
         <input value="${escapeHtml(visibleQuery)}" aria-label="公司代码示例" />
-        <button type="button">模拟收录</button>
+        <button type="button">联网查看</button>
         <span>${
           state.intakeQuery
-            ? `已创建「${escapeHtml(state.intakeQuery)}」的本地演示任务；接入 Workers 队列后会自动抓取财报。`
-            : "当前版本提供前端收录入口与官方来源路由，真实全市场抓取需要后端队列接入。"
+            ? `已加载「${escapeHtml(state.intakeQuery)}」的公司页；缺失指标会以估算字段标注。`
+            : "在左侧搜索框输入公司名或股票代码即可联网查看。"
         }</span>
       </div>
     </section>
@@ -636,6 +754,7 @@ const pdfPanel = () => {
 const sidebar = (selectedCompany: Company) => {
   const filteredCompanies = getFilteredCompanies();
   const universeMatches = getUniverseMatches();
+  const remoteMatches = getRemoteMatches();
   const query = state.query.trim();
   const hasExactMatch = filteredCompanies.some(
     (company) =>
@@ -694,11 +813,11 @@ const sidebar = (selectedCompany: Company) => {
               ${universeMatches
                 .map(
                   (candidate) => `
-                    <button class="company-intake" data-intake="${escapeHtml(candidate.ticker)}">
-                      <span>+</span>
+                    <button class="company-intake" data-load-company="${escapeHtml(candidate.ticker)}">
+                      <span>${state.loadingCompanyTicker === candidate.ticker ? "..." : "↗"}</span>
                       <div>
                         <strong>${escapeHtml(candidate.name)}</strong>
-                        <small>${escapeHtml(candidate.ticker)} · ${escapeHtml(candidate.marketLabel)} · ${escapeHtml(candidate.sector)}</small>
+                        <small>查看 ${escapeHtml(candidate.ticker)} · ${escapeHtml(candidate.marketLabel)} · ${escapeHtml(candidate.sector)}</small>
                       </div>
                     </button>
                   `,
@@ -709,13 +828,36 @@ const sidebar = (selectedCompany: Company) => {
           : ""
       }
       ${
-        query.length > 0 && !hasExactMatch && !hasVisibleMatch && universeMatches.length === 0
+        remoteMatches.length > 0
           ? `
-            <button class="company-intake" data-intake="${escapeHtml(query)}">
-              <span>+</span>
+            <div class="universe-list">
+              ${remoteMatches
+                .map(
+                  (candidate) => `
+                    <button class="company-intake" data-load-company="${escapeHtml(candidate.ticker)}">
+                      <span>${state.loadingCompanyTicker === candidate.ticker ? "..." : "↗"}</span>
+                      <div>
+                        <strong>${escapeHtml(candidate.name)}</strong>
+                        <small>联网查看 ${escapeHtml(candidate.ticker)} · ${escapeHtml(candidate.marketLabel)} · ${escapeHtml(candidate.sector)}</small>
+                      </div>
+                    </button>
+                  `,
+                )
+                .join("")}
+            </div>
+          `
+          : ""
+      }
+      ${state.remoteBusy ? `<div class="sidebar-status">正在搜索更多公司...</div>` : ""}
+      ${state.remoteError ? `<div class="sidebar-status sidebar-status--error">${escapeHtml(state.remoteError)}</div>` : ""}
+      ${
+        query.length > 0 && !hasExactMatch && !hasVisibleMatch && universeMatches.length === 0 && remoteMatches.length === 0 && !state.remoteBusy
+          ? `
+            <button class="company-intake" data-load-company="${escapeHtml(query)}">
+              <span>${state.loadingCompanyTicker === query ? "..." : "↗"}</span>
               <div>
-                <strong>自动收录「${escapeHtml(query)}」</strong>
-                <small>创建抓取任务，支持任意公司名 / 股票代码</small>
+                <strong>联网查找「${escapeHtml(query)}」</strong>
+                <small>支持任意公司名 / 股票代码，无需手动添加</small>
               </div>
             </button>
           `
@@ -743,7 +885,7 @@ const companyOverview = (company: Company) => {
           <a href="#analysis" class="is-active">财务分析</a>
           <a href="#breakdown">业务拆解</a>
           <a href="#archive">PDF 归档</a>
-          <a href="#ingest">自动收录</a>
+          <a href="#ingest">联网查看</a>
         </nav>
         <div class="actions">
           <button data-action="download-json">下载分析包</button>
@@ -834,6 +976,7 @@ const bindEvents = (company: Company) => {
   document.querySelectorAll<HTMLButtonElement>("[data-country]").forEach((button) => {
     button.addEventListener("click", () => {
       state.country = button.dataset.country as CountryFilter;
+      requestRemoteSearch(state.query);
       render();
     });
   });
@@ -845,17 +988,16 @@ const bindEvents = (company: Company) => {
     });
   });
 
-  document.querySelectorAll<HTMLButtonElement>("[data-intake]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>("[data-load-company]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.intakeQuery = button.dataset.intake ?? state.query.trim();
-      render();
-      document.querySelector("#ingest")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      void loadRemoteCompany(button.dataset.loadCompany ?? state.query.trim());
     });
   });
 
   document.querySelector<HTMLInputElement>("#company-query")?.addEventListener("input", (event) => {
     const target = event.target as HTMLInputElement;
     state.query = target.value;
+    requestRemoteSearch(target.value);
     render({ restoreQueryFocus: target.selectionStart ?? target.value.length });
   });
 

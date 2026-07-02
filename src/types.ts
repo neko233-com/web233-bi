@@ -1,4 +1,4 @@
-export type CountryCode = "us" | "china_a" | "hongkong" | "japan";
+export type CountryCode = "us" | "china_a" | "hongkong" | "japan" | "global";
 
 export type CompanyKind =
   | "tech"
