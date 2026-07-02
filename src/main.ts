@@ -77,16 +77,12 @@ const confidenceLabels: Record<FinancialBreakdown["confidence"], string> = {
   estimated: "估算",
 };
 
-const usdRates: Record<string, number> = {
+const currencyToUsdRates: Record<string, number> = {
   USD: 1,
   CNY: 0.138,
   HKD: 0.128,
   JPY: 0.0063,
 };
-
-const displayUnit = "十亿美元";
-
-const toUsd = (company: Company, value: number) => value * (usdRates[company.currency] ?? 1);
 
 const escapeHtml = (value: string) =>
   value
@@ -100,6 +96,22 @@ const formatValue = (value: number, suffix = "") =>
   `${new Intl.NumberFormat("zh-CN", {
     maximumFractionDigits: Math.abs(value) >= 100 ? 0 : 1,
   }).format(value)}${suffix}`;
+
+const toRmbYi = (company: Company, value: number) => {
+  const usdValue = value * (currencyToUsdRates[company.currency] ?? 1);
+  const rmbValue = usdValue / currencyToUsdRates.CNY;
+  return rmbValue * 10;
+};
+
+const formatRmbYi = (valueInYi: number, includeCurrency = true) => {
+  const prefix = includeCurrency ? "RMB " : "";
+  const absValue = Math.abs(valueInYi);
+  if (absValue >= 10_000) return `${prefix}${formatValue(valueInYi / 10_000)} 万亿`;
+  if (absValue >= 1) return `${prefix}${formatValue(valueInYi)} 亿`;
+  return `${prefix}${formatValue(valueInYi * 10_000)} 万`;
+};
+
+const formatRmbAmount = (company: Company, value: number) => formatRmbYi(toRmbYi(company, value));
 
 const latestMetric = (company: Company) =>
   [...company.metrics].sort((a, b) => b.fiscalYear - a.fiscalYear)[0];
@@ -158,15 +170,15 @@ const downloadText = (fileName: string, content: string, type: string) => {
 
 const metricRowsToCsv = (company: Company) => {
   const rows = [
-    ["Fiscal year", "Revenue USD bn", "Operating income USD bn", "Net income USD bn", "Free cash flow USD bn", "Gross margin", "R&D expense USD bn"],
+    ["财年", "营业收入 RMB 亿", "经营利润 RMB 亿", "净利润 RMB 亿", "自由现金流 RMB 亿", "毛利率", "研发费用 RMB 亿"],
     ...company.metrics.map((metric) => [
       metric.fiscalYear,
-      toUsd(company, metric.revenue).toFixed(2),
-      toUsd(company, metric.operatingIncome).toFixed(2),
-      toUsd(company, metric.netIncome).toFixed(2),
-      toUsd(company, metric.freeCashFlow).toFixed(2),
+      toRmbYi(company, metric.revenue).toFixed(2),
+      toRmbYi(company, metric.operatingIncome).toFixed(2),
+      toRmbYi(company, metric.netIncome).toFixed(2),
+      toRmbYi(company, metric.freeCashFlow).toFixed(2),
       metric.grossMargin,
-      toUsd(company, metric.rdExpense).toFixed(2),
+      toRmbYi(company, metric.rdExpense).toFixed(2),
     ]),
   ];
 
@@ -216,7 +228,7 @@ const trendChart = (
   const padding = { top: 26, right: 58, bottom: 48, left: 58 };
   const metrics = [...company.metrics].sort((a, b) => a.fiscalYear - b.fiscalYear);
   const convertMetric = (key: MetricKey, value: number) =>
-    key === "grossMargin" ? value : toUsd(company, value);
+    key === "grossMargin" ? value : toRmbYi(company, value);
   const primaryValues = metrics.map((metric) => convertMetric(primaryKey, metric[primaryKey] as number));
   const secondaryValues = metrics.map((metric) => convertMetric(secondaryKey, metric[secondaryKey] as number));
   const maxValue = Math.max(...primaryValues, ...secondaryValues, 1);
@@ -238,7 +250,7 @@ const trendChart = (
     const value = maxValue - (index / 4) * range;
     return `
       <line x1="${padding.left}" y1="${lineY}" x2="${width - padding.right}" y2="${lineY}" />
-      <text x="${padding.left - 12}" y="${lineY + 4}" text-anchor="end">${formatValue(value)}</text>
+      <text x="${padding.left - 12}" y="${lineY + 4}" text-anchor="end">${formatRmbYi(value, false)}</text>
     `;
   }).join("");
 
@@ -261,10 +273,10 @@ const trendChart = (
       <path d="${path(primaryValues)}" fill="none" stroke="#059669" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
       <path d="${path(secondaryValues)}" fill="none" stroke="#2563eb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
       ${primaryValues
-        .map((value, index) => `<circle cx="${x(index)}" cy="${y(value)}" r="4.5" fill="#059669"><title>${metricLabels[primaryKey]} ${formatValue(value)}</title></circle>`)
+        .map((value, index) => `<circle cx="${x(index)}" cy="${y(value)}" r="4.5" fill="#059669"><title>${metricLabels[primaryKey]} ${formatRmbYi(value)}</title></circle>`)
         .join("")}
       ${secondaryValues
-        .map((value, index) => `<circle cx="${x(index)}" cy="${y(value)}" r="4.5" fill="#2563eb"><title>${metricLabels[secondaryKey]} ${formatValue(value)}</title></circle>`)
+        .map((value, index) => `<circle cx="${x(index)}" cy="${y(value)}" r="4.5" fill="#2563eb"><title>${metricLabels[secondaryKey]} ${formatRmbYi(value)}</title></circle>`)
         .join("")}
       <g class="chart-legend">
         <circle cx="610" cy="30" r="5" fill="#059669" />
@@ -288,7 +300,7 @@ const segmentChart = (company: Company) => {
             <div class="segment-row">
               <div>
                 <span>${escapeHtml(segment.name)}</span>
-                <small>${formatValue(toUsd(company, segment.value))} ${displayUnit}</small>
+                <small>${formatRmbAmount(company, segment.value)}</small>
               </div>
               <div class="segment-track" aria-hidden="true">
                 <i style="width: ${width}%"></i>
@@ -320,7 +332,7 @@ const breakdownList = (company: Company, category: BreakdownCategory, limit?: nu
                   <small>${escapeHtml(row.sourceLabel)} · ${confidenceLabels[row.confidence]}</small>
                 </div>
                 <span class="${valueClass}">
-                  ${formatValue(toUsd(company, row.value))} ${displayUnit}
+                  ${formatRmbAmount(company, row.value)}
                 </span>
               </div>
               <div class="breakdown-bar" aria-hidden="true">
@@ -349,7 +361,7 @@ const profitBridge = (company: Company) => {
           (row) => `
             <article>
               <span>${escapeHtml(row.label)}</span>
-              <strong>${formatValue(toUsd(company, row.value))} ${displayUnit}</strong>
+              <strong>${formatRmbAmount(company, row.value)}</strong>
               <small>${formatValue(row.percentOfRevenue ?? 0, "%")} of revenue</small>
             </article>
           `,
@@ -490,8 +502,8 @@ const autoIngestPanel = (company: Company) => {
         </article>
         <article>
           <span>04</span>
-          <strong>统一美元口径</strong>
-          <small>原币保留，图表统一折算为 USD</small>
+          <strong>统一人民币口径</strong>
+          <small>原币保留，图表统一折算为 RMB 万 / 亿</small>
         </article>
       </div>
       <div class="source-route-grid" aria-label="官方披露源路线">
@@ -745,8 +757,8 @@ const companyOverview = (company: Company) => {
         </div>
         <div class="header-stat">
           <span>${latest.fiscalYear} 收入</span>
-          <strong>${formatValue(toUsd(company, latest.revenue))} ${displayUnit}</strong>
-          <small>已按 ${escapeHtml(company.currency)} 转 USD；${escapeHtml(company.exchangeHint)}</small>
+          <strong>${formatRmbAmount(company, latest.revenue)}</strong>
+          <small>已按 ${escapeHtml(company.currency)} 折算为 RMB；${escapeHtml(company.exchangeHint)}</small>
         </div>
       </section>
       <section class="analysis-grid" id="analysis">
@@ -754,15 +766,15 @@ const companyOverview = (company: Company) => {
           <div class="section-heading">
             <div>
               <h2>核心财务趋势</h2>
-              <p>${earliest.fiscalYear}-${latest.fiscalYear}，统一展示单位：${displayUnit}。原始披露币种：${escapeHtml(company.currency)}。</p>
+              <p>${earliest.fiscalYear}-${latest.fiscalYear}，统一展示为 RMB 万 / 亿。原始披露币种：${escapeHtml(company.currency)}。</p>
             </div>
             <button class="ghost-button" data-action="download-svg">下载 SVG</button>
           </div>
           <div class="metric-strip">
-            ${renderMetricCard("营业收入", `${formatValue(toUsd(company, latest.revenue))} ${displayUnit}`, `CAGR ${formatValue(revenueCagr, "%")}`, "green")}
-            ${renderMetricCard("净利润", `${formatValue(toUsd(company, latest.netIncome))} ${displayUnit}`, `CAGR ${formatValue(profitCagr, "%")}`, "blue")}
+            ${renderMetricCard("营业收入", formatRmbAmount(company, latest.revenue), `CAGR ${formatValue(revenueCagr, "%")}`, "green")}
+            ${renderMetricCard("净利润", formatRmbAmount(company, latest.netIncome), `CAGR ${formatValue(profitCagr, "%")}`, "blue")}
             ${renderMetricCard("毛利率", formatValue(latest.grossMargin, "%"), "最新财年", "purple")}
-            ${renderMetricCard("研发费用", `${formatValue(toUsd(company, latest.rdExpense))} ${displayUnit}`, "创新投入", "orange")}
+            ${renderMetricCard("研发费用", formatRmbAmount(company, latest.rdExpense), "创新投入", "orange")}
           </div>
           <div class="chart-shell">
             ${trendChart(company, "revenue", "netIncome")}
